@@ -21,6 +21,7 @@ def bronze_table(source: str, comment: str):
             .option("cloudFiles.format", "json")
             .option("cloudFiles.inferColumnTypes", "false")      # keep raw values as strings
             .option("cloudFiles.schemaEvolutionMode", "rescue")   # unexpected fields -> _rescued_data
+            .option("cloudFiles.schemaHints", "_synthetic BOOLEAN")  # always present; null for real rows
             .load(f"{LANDING}/{source}/")
             .withColumn("_ingested_at", F.current_timestamp())
             .withColumn("_source_file", F.col("_metadata.file_path"))

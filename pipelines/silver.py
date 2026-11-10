@@ -32,6 +32,8 @@ COMMON = [
     F.trim("awarding_sub_agency").alias("awarding_sub_agency"),
     F.col("naics_code"), F.col("naics_description"),
     F.col("psc_code"), F.col("psc_description"),
+    # Real rows have no _synthetic flag; synthetic rows are tagged true at generation.
+    F.coalesce(F.col("_synthetic"), F.lit(False)).alias("is_synthetic"),
     F.col("_ingested_at"), F.col("_source_file"), F.col("_run_id"),
 ]
 
@@ -113,7 +115,7 @@ def vendor_changes():
     return (
         spark.readStream.table("contracts_valid")  # noqa: F821
         .where("recipient_uei IS NOT NULL")
-        .select("recipient_uei", "recipient_name", "pop_state", "last_modified_ts")
+        .select("recipient_uei", "recipient_name", "pop_state", "is_synthetic", "last_modified_ts")
     )
 
 

@@ -1,6 +1,9 @@
 # Lakeflow Declarative Pipeline — GOLD
 # Business-ready tables for procurement analytics.
 #
+# Every table carries data_source ('real' or 'synthetic') so dashboards can filter
+# and real figures are never blended with synthetic ones unknowingly.
+#
 # Spend over time comes from TRANSACTIONS (money obligated on a date), never from
 # award totals: an award's amount is its lifetime value, so summing it by start
 # month would put years of spend into one month.
@@ -14,8 +17,12 @@ SPLIT_THRESHOLD = float(spark.conf.get("split_threshold", "10000"))  # noqa: F82
 SPLIT_BAND = 0.10  # flag base awards within 10% below the threshold
 
 
+def with_source(df):
+    return df.withColumn("data_source", F.when(F.col("is_synthetic"), "synthetic").otherwise("real"))
+
+
 def transactions():
-    return spark.read.table("silver_transactions")  # noqa: F821
+    return with_source(spark.read.table("silver_transactions"))  # noqa: F821
 
 
 @dp.materialized_view(comment="Monthly obligations per agency: new awards vs modifications, and de-obligations.")
@@ -23,7 +30,7 @@ def gold_spend_by_agency_month():
     return (
         transactions()
         .withColumn("month", F.date_trunc("month", "action_date"))
-        .groupBy("awarding_agency", "month")
+        .groupBy("data_source", "awarding_agency", "month")
         .agg(
             F.sum("transaction_amount").alias("net_obligations"),
             F.sum(F.when(F.col("is_base_award"), F.col("transaction_amount"))).alias("new_award_obligations"),
@@ -39,7 +46,7 @@ def gold_spend_by_agency_month():
 def gold_spend_by_category():
     return (
         transactions()
-        .groupBy("psc_code", "psc_description", "naics_code", "naics_description")
+        .groupBy("data_source", "psc_code", "psc_description", "naics_code", "naics_description")
         .agg(F.sum("transaction_amount").alias("net_obligations"),
              F.countDistinct("award_key").alias("award_count"))
     )
@@ -49,12 +56,12 @@ def gold_spend_by_category():
 def gold_top_vendors():
     by_vendor = (
         transactions()
-        .groupBy("awarding_agency", "recipient_uei", "recipient_name")
+        .groupBy("data_source", "awarding_agency", "recipient_uei", "recipient_name")
         .agg(F.sum("transaction_amount").alias("vendor_obligations"),
              F.countDistinct("award_key").alias("award_count"))
         .where("vendor_obligations > 0")
     )
-    agency = Window.partitionBy("awarding_agency")
+    agency = Window.partitionBy("data_source", "awarding_agency")
     return (
         by_vendor
         .withColumn("share_of_agency_spend", F.col("vendor_obligations") / F.sum("vendor_obligations").over(agency))
@@ -69,7 +76,7 @@ def gold_top_vendors():
 def gold_vendor_concentration():
     return (
         spark.read.table("gold_top_vendors")  # noqa: F821
-        .groupBy("awarding_agency")
+        .groupBy("data_source", "awarding_agency")
         .agg(F.round(F.sum(F.pow(F.col("share_of_agency_spend") * 100, 2)), 0).alias("hhi"),
              F.count("*").alias("vendor_count"))
         .withColumn("concentration",
@@ -90,7 +97,7 @@ def gold_split_purchase_flags():
         & (F.col("transaction_amount") >= SPLIT_THRESHOLD * (1 - SPLIT_BAND))
     )
     return (
-        near.groupBy("awarding_agency", "recipient_uei", "recipient_name", "action_date")
+        near.groupBy("data_source", "awarding_agency", "recipient_uei", "recipient_name", "action_date")
         .agg(F.count("*").alias("award_count"),
              F.sum("transaction_amount").alias("combined_amount"),
              F.collect_list("award_id").alias("award_ids"))
@@ -100,12 +107,12 @@ def gold_split_purchase_flags():
 
 @dp.materialized_view(comment="Largest contracts by lifetime value, with obligations seen in the loaded period.")
 def gold_contract_portfolio():
-    obligated = (transactions().groupBy("award_key")
+    obligated = (spark.read.table("silver_transactions").groupBy("award_key")  # noqa: F821
                  .agg(F.sum("transaction_amount").alias("obligations_in_period"),
                       F.max("action_date").alias("last_action_date")))
     return (
-        spark.read.table("silver_contracts")  # noqa: F821
-        .select("award_key", "award_id", "recipient_name", "awarding_agency", "award_amount",
+        with_source(spark.read.table("silver_contracts"))  # noqa: F821
+        .select("data_source", "award_key", "award_id", "recipient_name", "awarding_agency", "award_amount",
                 "start_date", "end_date", "psc_description")
         .join(obligated, "award_key", "left")
     )

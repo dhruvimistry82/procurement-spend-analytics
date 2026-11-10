@@ -59,9 +59,9 @@ flowchart LR
 
 ```
 config/sources.yml        what to ingest (metadata)
-ingestion/                API client + CLI that lands JSON Lines files; synthetic data generator
+ingestion/                API client + CLI that lands JSON Lines files; calibration + synthetic data generator
 pipelines/                Lakeflow declarative pipeline: bronze.py, silver.py, gold.py
-tests/                    unit tests: ingestion (mocked API) and synthetic data (planted anomalies are detectable)
+tests/                    unit tests: ingestion (mocked API), calibration, synthetic data (planted anomalies are detectable)
 docs/setup.sql            one-time catalog / schema / volume setup
 .github/workflows/        CI (tests) + daily ingestion schedule
 ```
@@ -86,11 +86,21 @@ python -m ingestion.ingest --start 2026-10-01 --end 2026-10-07 --max-pages 2
 
 **3. Schedule it**: add `DATABRICKS_HOST` and `DATABRICKS_TOKEN` as GitHub repo secrets. `.github/workflows/ingest.yml` lands new data daily; schedule the pipeline in Databricks to run after it.
 
-## Synthetic data for validation
+## Data: real sample + calibrated synthetic extension
 
-`ingestion/synthetic.py` generates fictional data in exactly the same format as the real API (checked by tests), with **known problems planted on purpose** and the answers saved to `data/synthetic_truth/truth.json`:
+| Period | Source | Rows tagged |
+|---|---|---|
+| Jul 1-3, 2026 | **Real** USAspending.gov data (NASA, GSA, EPA) | `data_source = 'real'` |
+| Jul 4 - Sep 30, 2026 | **Synthetic**, calibrated on the real sample | `data_source = 'synthetic'` |
 
-| Planted | Where the pipeline should catch it |
+The real sample proves the pipeline works on real government data. To analyze a full fiscal quarter without heavy API use, `ingestion/calibrate.py` learns **aggregate statistics only** from the real files (category mix, amount distributions per category, daily volume, modification and de-obligation rates), and `ingestion/synthetic.py` generates the rest of the quarter from that profile.
+
+Safeguards:
+- **Every row is tagged.** `is_synthetic` flows from Bronze to Silver; every Gold table has `data_source`, and the dashboard filters on it. Real and synthetic figures are never blended unknowingly.
+- **Synthetic names are always fictional** (e.g. "Department of Space Exploration", "Summit Labs LLC"), so no synthetic record can be mistaken for a real agency or company.
+- **Planted anomalies with an answer key** (`data/synthetic_truth/truth.json`) prove the pipeline catches what it should:
+
+| Planted in synthetic data | Caught in |
 |---|---|
 | Split purchases (2-3 same-day awards just under the threshold) | `gold_split_purchase_flags` |
 | Invalid rows (missing agency or amount, end before start, future date) | `quarantine_contracts`, `quarantine_transactions` |
@@ -99,9 +109,12 @@ python -m ingestion.ingest --start 2026-10-01 --end 2026-10-07 --max-pages 2
 | September fiscal year-end surge | monthly trend |
 
 ```bash
-python -m ingestion.synthetic --start 2026-07-01 --end 2026-09-30 --target volume
+# 1. profile the real sample (in a Databricks notebook, or locally on downloaded files)
+python -m ingestion.calibrate --input data/landing --out config/calibration.json
+# 2. extend it with tagged synthetic data
+python -m ingestion.synthetic --start 2026-07-04 --end 2026-09-30 \
+    --calibration config/calibration.json --into-real-landing --target volume
 ```
-It lands in `landing_synthetic`, separate from real data. Run the pipeline with `landing_path = /Volumes/procurement/raw/landing_synthetic` into a separate schema, then compare the Gold and quarantine tables with `truth.json`.
 
 ## Roadmap
 

@@ -7,6 +7,13 @@ so you can check the Gold and quarantine tables against it.
     python -m ingestion.synthetic --start 2026-07-01 --end 2026-07-31
     python -m ingestion.synthetic --start 2026-07-01 --end 2026-07-31 --target volume
 
+Calibrated mode extends a real sample: it learns category mix, amounts, volume and
+modification / de-obligation rates from config/calibration.json (see calibrate.py)
+and writes into the real landing folder, every row tagged `_synthetic: true`:
+
+    python -m ingestion.synthetic --start 2026-07-04 --end 2026-09-30 \
+        --calibration config/calibration.json --into-real-landing --target volume
+
 Planted on purpose (counts in data/synthetic_truth/truth.json):
   * split purchases: 2-3 new awards to one vendor, same agency, same day, each just
     under the threshold  -> should appear in gold_split_purchase_flags
@@ -15,14 +22,16 @@ Planted on purpose (counts in data/synthetic_truth/truth.json):
   * de-obligations (negative transactions) -> valid, reported as deobligations
   * re-landed duplicates of transactions -> Silver should keep one copy
 
-All names are fictional. Files go to a separate landing folder (landing_synthetic)
-so synthetic data never mixes with real data.
+Agency and vendor names are always fictional, so synthetic rows can never be
+mistaken for records about a real organization. Without --into-real-landing, files
+go to a separate folder (landing_synthetic).
 """
 from __future__ import annotations
 
 import argparse
 import json
 import logging
+import math
 import random
 from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
@@ -69,11 +78,30 @@ def make_vendors(rng: random.Random, n: int = 60) -> list[dict[str, str]]:
 
 class Generator:
     def __init__(self, seed: int = 42, rows_per_day: int = 120, split_threshold: float = 10_000,
-                 split_cases_per_week: int = 3, invalid_rate: float = 0.01):
+                 split_cases_per_week: int = 3, invalid_rate: float = 0.01,
+                 calibration: dict[str, Any] | None = None, scale: float = 0.25):
         self.rng = random.Random(seed)
-        self.vendors = make_vendors(self.rng)
+        self.cal = calibration
+        if calibration:
+            # Real-looking mix and volume; enough vendors that chance coincidences are rare.
+            self.categories = [dict(c) for c in calibration["categories"]]
+            rows_per_day = max(10, int(calibration["weekday_transactions_per_day"] * scale))
+            self.mod_share = calibration["modification_share"]
+            self.deob_share = calibration["deobligation_share_of_modifications"]
+            self.award_types = calibration["award_types"]
+            n_vendors = max(60, int(calibration.get("vendors_per_day", 60) * scale * 2))
+        else:
+            self.categories = [{"naics_code": n, "naics_description": nd, "psc_code": p, "psc_description": pd,
+                                "weight": 1.0, "median": typical, "sigma": 1.1}
+                               for n, nd, p, pd, typical in CATEGORIES]
+            self.mod_share, self.deob_share = 0.35, 0.12
+            self.award_types = {t: 1.0 for t in AWARD_TYPES}
+            n_vendors = 60
+        self.vendors = make_vendors(self.rng, n_vendors)
         # A few vendors win most work, like real procurement (drives the concentration metric).
-        self.weights = [8 if i < 5 else 1 for i in range(len(self.vendors))]
+        top = max(5, n_vendors // 20)
+        self.weights = [8 if i < top else 1 for i in range(len(self.vendors))]
+        self.n_top = top
         self.rows_per_day = rows_per_day
         self.threshold = split_threshold
         self.split_cases_per_week = split_cases_per_week
@@ -89,21 +117,22 @@ class Generator:
         rng = self.rng
         agency = agency or rng.choice(list(AGENCIES))
         vendor = vendor or rng.choices(self.vendors, weights=self.weights)[0]
-        naics, naics_d, psc, psc_d, typical = category or rng.choice(CATEGORIES)
+        cat = category or rng.choices(self.categories, weights=[c["weight"] for c in self.categories])[0]
         if amount is None:
-            amount = round(max(500.0, rng.lognormvariate(0, 1.1) * typical), 2)
+            amount = round(max(100.0, rng.lognormvariate(math.log(cat["median"]), cat["sigma"])), 2)
         piid = f"SYN{day:%y}{self.next_id:07d}"
         self.next_id += 1
         award = {
             "award_id": piid, "generated_internal_id": f"CONT_AWD_{piid}_SYN",
             "recipient_name": vendor["name"], "recipient_uei": vendor["uei"], "state": vendor["state"],
             "awarding_agency": agency, "awarding_sub_agency": rng.choice(AGENCIES[agency]),
-            "naics_code": naics, "naics_description": naics_d, "psc_code": psc, "psc_description": psc_d,
-            "award_type": award_type or rng.choice(AWARD_TYPES),
+            "naics_code": cat["naics_code"], "naics_description": cat["naics_description"],
+            "psc_code": cat["psc_code"], "psc_description": cat["psc_description"],
+            "award_type": award_type or rng.choices(list(self.award_types), weights=list(self.award_types.values()))[0],
             "start_date": day, "end_date": day + timedelta(days=rng.choice([30, 90, 180, 365, 730])),
             "obligated": 0.0, "mods": 0, "base_amount": amount,
             "ceiling": round(amount * rng.choice([1.0, 1.0, 1.5, 2.0, 3.0]), 2),
-            "description": f"{psc_d.split('- ')[-1].title()} support",
+            "description": f"{(cat['psc_description'] or 'general').split('- ')[-1].title()} support",
         }
         self.awards[award["generated_internal_id"]] = award
         return award
@@ -165,10 +194,10 @@ class Generator:
 
         open_awards = [a for a in self.awards.values() if a["end_date"] >= day]
         for _ in range(max(0, n)):
-            if open_awards and rng.random() < 0.35:  # modification of an existing award
+            if open_awards and rng.random() < self.mod_share:  # modification of an existing award
                 award = rng.choice(open_awards)
                 award["mods"] += 1
-                if rng.random() < 0.12:
+                if rng.random() < self.deob_share:
                     amount = -round(min(award["obligated"], award["base_amount"]) * rng.uniform(0.05, 0.4), 2)
                     self.truth["deobligations"] += 1
                 else:
@@ -187,14 +216,15 @@ class Generator:
 
         # Planted split purchases (weekdays only).
         if day.weekday() < 5 and rng.random() < self.split_cases_per_week / 5:
-            vendor = rng.choice(self.vendors[5:])
+            vendor = rng.choice(self.vendors[self.n_top:])
             agency = rng.choice(list(AGENCIES))
             k = rng.choice([2, 2, 3])
             ids = []
             for _ in range(k):
                 amt = round(rng.uniform(self.threshold * 0.91, self.threshold * 0.995), 2)
                 a = self._new_award(day, amount=amt, vendor=vendor, agency=agency,
-                                    category=CATEGORIES[-1], award_type="PURCHASE ORDER")
+                                    category=min(self.categories, key=lambda c: c["median"]),
+                                    award_type="PURCHASE ORDER")
                 txs.append(self._transaction(a, day, amt, "0"))
                 touched.add(a["generated_internal_id"])
                 ids.append(a["award_id"])
@@ -226,17 +256,22 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--rows-per-day", type=int, default=120)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--config", default=str(REPO_ROOT / "config" / "sources.yml"))
+    parser.add_argument("--calibration", help="profile from ingestion.calibrate, to mimic a real sample")
+    parser.add_argument("--scale", type=float, default=0.25, help="fraction of the real daily volume (calibrated mode)")
+    parser.add_argument("--into-real-landing", action="store_true",
+                        help="write into the real landing folder (rows stay tagged _synthetic)")
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     cfg = load_config(Path(args.config))
-    landing = cfg.get("synthetic_landing", {})
+    landing = cfg["landing"] if args.into_real_landing else cfg.get("synthetic_landing", {})
     if args.target == "volume":
         target = VolumeTarget(landing.get("volume_dir", "/Volumes/procurement/raw/landing_synthetic"))
     else:
         target = LocalTarget(REPO_ROOT / landing.get("local_dir", "data/landing_synthetic"))
 
-    gen = Generator(seed=args.seed, rows_per_day=args.rows_per_day)
+    calibration = json.loads(Path(args.calibration).read_text()) if args.calibration else None
+    gen = Generator(seed=args.seed, rows_per_day=args.rows_per_day, calibration=calibration, scale=args.scale)
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     totals: dict[str, int] = defaultdict(int)
     for day in daterange(args.start, args.end):

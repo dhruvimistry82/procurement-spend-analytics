@@ -1,0 +1,3 @@
+requests>=2.31
+pyyaml>=6.0
+databricks-sdk>=0.30   # only needed for --target volume

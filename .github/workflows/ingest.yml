@@ -1,0 +1,19 @@
+# Daily ingestion: pulls yesterday's 7-day window and lands it in the Databricks Volume.
+# Set repo secrets DATABRICKS_HOST and DATABRICKS_TOKEN (Settings -> Secrets -> Actions).
+name: Daily ingest
+on:
+  schedule:
+    - cron: "17 9 * * *"   # 09:17 UTC daily
+  workflow_dispatch: {}
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - run: pip install -r requirements.txt
+      - run: python -m ingestion.ingest --target volume
+        env:
+          DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}

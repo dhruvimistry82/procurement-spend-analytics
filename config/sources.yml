@@ -1,0 +1,57 @@
+# Metadata that drives ingestion. Add an entry to onboard a new slice of data — no code changes.
+#
+# Two grains, on purpose:
+#   contracts     one row per award: who, what, total lifetime value (award dimension)
+#   transactions  one row per obligation (base award or modification) with its own date:
+#                 this is the money actually committed, so all "spend over time" uses it
+sources:
+  - name: contracts
+    active: true
+    endpoint: /api/v2/search/spending_by_award/
+    award_type_codes: ["A", "B", "C", "D"]   # definitive contracts, POs, delivery orders, BPA calls
+    date_type: action_date                     # awards with any action in the window
+    sort: Award Amount
+    page_size: 100
+    fields:
+      - Award ID
+      - generated_internal_id
+      - Recipient Name
+      - Recipient UEI
+      - Awarding Agency
+      - Awarding Sub Agency
+      - Funding Agency
+      - Award Amount
+      - Total Outlays
+      - Contract Award Type
+      - NAICS
+      - PSC
+      - Description
+      - Start Date
+      - End Date
+      - Last Modified Date
+      - Place of Performance State Code
+
+  - name: transactions
+    active: true
+    endpoint: /api/v2/search/spending_by_transaction/
+    award_type_codes: ["A", "B", "C", "D"]
+    sort: Transaction Amount
+    page_size: 100
+    fields:
+      - Award ID
+      - Mod
+      - Recipient Name
+      - Recipient UEI
+      - Action Date
+      - Transaction Amount
+      - Transaction Description
+      - Awarding Agency
+      - Awarding Sub Agency
+      - Award Type
+      - NAICS
+      - PSC
+
+landing:
+  # Local folder for runs on your laptop; Unity Catalog Volume path for Databricks.
+  local_dir: data/landing
+  volume_dir: /Volumes/procurement/raw/landing

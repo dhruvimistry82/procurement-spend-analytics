@@ -44,7 +44,9 @@ flowchart LR
 | **Negative transactions are valid** | They are de-obligations (money taken back) and are reported separately instead of being filtered out. |
 | **Ingestion runs outside Databricks** (GitHub Actions) and lands files in a Volume | Keeps API logic testable in plain Python and works on Databricks Free Edition, where outbound internet is restricted. |
 | **Metadata-driven sources** (`config/sources.yml`) | New award types or date strategies are config changes, not code changes. |
-| **Immutable landing files** named by window + run ID | Auto Loader picks up only new files; reruns never overwrite history; any day can be replayed. |
+| **Day-by-day queries, split further when capped** | The search API returns at most 10,000 rows per query. Each day is queried separately and saved immediately; a day that still hits the cap is re-queried in amount bands (halved until under the cap) and de-duplicated, so no rows are silently lost. Rows from any band that couldn't be fully fetched are marked `_possibly_incomplete`. |
+| **Scoped to chosen agencies** (config) | Four agencies keep the volume manageable on free tooling and make the analysis focused; removing one config line pulls every agency. |
+| **Immutable landing files** named by day + run ID | Auto Loader picks up only new files; reruns never overwrite history; any day can be replayed. |
 | **Bronze keeps raw strings + `_rescued_data`** | A source schema change can't break ingestion; Silver can always be rebuilt from Bronze. |
 | **Quarantine instead of silent drops** | Every failed row lands in `quarantine_contracts` / `quarantine_transactions` with the list of rules it broke. |
 | **Auto CDC (SCD1) for awards** | Awards are modified over their life; Silver keeps the latest version, ordered by `last_modified_ts`. |
@@ -70,7 +72,7 @@ python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\act
 pip install -r requirements-dev.txt
 pytest -q
 python -m ingestion.ingest --start 2026-10-01 --end 2026-10-07 --max-pages 2
-# -> data/landing/contracts/... and data/landing/transactions/... (.jsonl)
+# -> one file per source per day under data/landing/contracts/ and data/landing/transactions/
 ```
 
 **2. Set up Databricks** (Free Edition works)

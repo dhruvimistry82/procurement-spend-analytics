@@ -4,6 +4,15 @@
 #   contracts     one row per award: who, what, total lifetime value (award dimension)
 #   transactions  one row per obligation (base award or modification) with its own date:
 #                 this is the money actually committed, so all "spend over time" uses it
+# Scope: which agencies to analyze. Keeps volume manageable and the analysis focused.
+# Remove the `filters:` line from a source to pull every agency.
+scope: &scope
+  agencies:
+    - {type: awarding, tier: toptier, name: "Department of Veterans Affairs"}
+    - {type: awarding, tier: toptier, name: "Department of Homeland Security"}
+    - {type: awarding, tier: toptier, name: "National Aeronautics and Space Administration"}
+    - {type: awarding, tier: toptier, name: "General Services Administration"}
+
 sources:
   - name: contracts
     active: true
@@ -12,6 +21,8 @@ sources:
     date_type: action_date                     # awards with any action in the window
     sort: Award Amount
     page_size: 100
+    filters: *scope
+    dedup_keys: [generated_internal_id]
     fields:
       - Award ID
       - generated_internal_id
@@ -37,6 +48,8 @@ sources:
     award_type_codes: ["A", "B", "C", "D"]
     sort: Transaction Amount
     page_size: 100
+    filters: *scope
+    dedup_keys: [generated_internal_id, Mod]
     fields:
       - Award ID
       - Mod

@@ -67,3 +67,9 @@ landing:
   # Local folder for runs on your laptop; Unity Catalog Volume path for Databricks.
   local_dir: data/landing
   volume_dir: /Volumes/procurement/raw/landing
+
+synthetic_landing:
+  # Synthetic test data (python -m ingestion.synthetic) lands here, never mixed with real data.
+  # Point the pipeline's landing_path at volume_dir to run it on synthetic data.
+  local_dir: data/landing_synthetic
+  volume_dir: /Volumes/procurement/raw/landing_synthetic

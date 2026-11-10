@@ -59,9 +59,9 @@ flowchart LR
 
 ```
 config/sources.yml        what to ingest (metadata)
-ingestion/                API client + CLI that lands JSON Lines files
+ingestion/                API client + CLI that lands JSON Lines files; synthetic data generator
 pipelines/                Lakeflow declarative pipeline: bronze.py, silver.py, gold.py
-tests/                    unit tests for the ingestion layer (mocked API)
+tests/                    unit tests: ingestion (mocked API) and synthetic data (planted anomalies are detectable)
 docs/setup.sql            one-time catalog / schema / volume setup
 .github/workflows/        CI (tests) + daily ingestion schedule
 ```
@@ -85,6 +85,23 @@ python -m ingestion.ingest --start 2026-10-01 --end 2026-10-07 --max-pages 2
 4. Run it, then build a dashboard on the `gold_*` tables.
 
 **3. Schedule it**: add `DATABRICKS_HOST` and `DATABRICKS_TOKEN` as GitHub repo secrets. `.github/workflows/ingest.yml` lands new data daily; schedule the pipeline in Databricks to run after it.
+
+## Synthetic data for validation
+
+`ingestion/synthetic.py` generates fictional data in exactly the same format as the real API (checked by tests), with **known problems planted on purpose** and the answers saved to `data/synthetic_truth/truth.json`:
+
+| Planted | Where the pipeline should catch it |
+|---|---|
+| Split purchases (2-3 same-day awards just under the threshold) | `gold_split_purchase_flags` |
+| Invalid rows (missing agency or amount, end before start, future date) | `quarantine_contracts`, `quarantine_transactions` |
+| Re-landed duplicate transactions | `silver_transactions` keeps one copy |
+| De-obligations (negative amounts) | `deobligations` in `gold_spend_by_agency_month` |
+| September fiscal year-end surge | monthly trend |
+
+```bash
+python -m ingestion.synthetic --start 2026-07-01 --end 2026-09-30 --target volume
+```
+It lands in `landing_synthetic`, separate from real data. Run the pipeline with `landing_path = /Volumes/procurement/raw/landing_synthetic` into a separate schema, then compare the Gold and quarantine tables with `truth.json`.
 
 ## Roadmap
 

@@ -5,3 +5,4 @@ CREATE CATALOG IF NOT EXISTS procurement;
 CREATE SCHEMA  IF NOT EXISTS procurement.raw;
 CREATE SCHEMA  IF NOT EXISTS procurement.analytics;   -- pipeline target (bronze/silver/gold tables)
 CREATE VOLUME  IF NOT EXISTS procurement.raw.landing;
+CREATE VOLUME  IF NOT EXISTS procurement.raw.landing_synthetic;  -- synthetic test data

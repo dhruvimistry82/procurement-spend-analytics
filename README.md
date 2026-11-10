@@ -96,7 +96,14 @@ python -m ingestion.ingest --start 2026-10-01 --end 2026-10-07 --max-pages 2
 
 The real sample proves the pipeline works on real government data. To analyze a full fiscal quarter without heavy API use, `ingestion/calibrate.py` learns **aggregate statistics only** from the real files (category mix, amount distributions per category, daily volume, modification and de-obligation rates), and `ingestion/synthetic.py` generates the rest of the quarter from that profile.
 
-**Getting the dollars right.** Federal spending is extremely heavy-tailed: a handful of huge awards make up most of the money. A first version described amounts by their median and produced synthetic days worth ~4% of a real day. The calibration now stores amounts as equal-count bucket averages (1,001 buckets overall, 101 per category), sampled in proportion to bucket size, which preserves the real mean exactly, giants included. Across 10 seeds, synthetic daily obligations average **1.02x** the real sample (tested in `tests/test_calibration.py`).
+**Getting the dollars right.** Federal spending is extremely heavy-tailed: a handful of huge awards make up most of the money. A first version described amounts by their median and produced synthetic days worth ~4% of a real day. The calibration now stores amounts as equal-count bucket averages (1,001 buckets overall, 101 per category), sampled in proportion to bucket size, which preserves the real mean exactly, giants included. Across 10 seeds, synthetic daily obligations average **1.02x** the real sample (tested in `tests/test_calibration.py`); any single run varies (0.4x-1.2x) because a few giant awards dominate. In the published run, synthetic weekdays average ~$138M vs ~$285M for the 3 real days: same order of magnitude, where the first version was at ~4%.
+
+| Month | Source | Net obligations |
+|---|---|---:|
+| Jul 1-3 | real | $0.85B |
+| Jul 4-31 | synthetic | $2.75B |
+| Aug | synthetic | $2.89B |
+| Sep | synthetic | $7.14B (fiscal year-end surge) |
 
 Safeguards:
 - **Every row is tagged.** `is_synthetic` flows from Bronze to Silver; every Gold table has `data_source`, and the dashboard filters on it. Real and synthetic figures are never blended unknowingly.
@@ -121,21 +128,18 @@ python -m ingestion.synthetic --start 2026-07-04 --end 2026-09-30 \
 
 ## Validation results
 
-Full refresh on 3 days of real data + Jul 4-Sep 30 synthetic data. Every table matches the count computed independently from the generator's answer key:
+Full refresh on 3 days of real data + Jul 4-Sep 30 synthetic data at full real volume (~800k rows). `notebooks/synthetic_extension.py` checks every table, for real and synthetic rows separately, against counts computed independently from the generator:
 
-| Check | Expected | Actual | Proves |
+| Check | Real expected / actual | Synthetic expected / actual | Proves |
 |---|---:|---:|---|
-| `bronze_transactions` | 105,987 | 105,987 | Auto Loader read every file exactly once |
-| `bronze_contracts` | 104,508 | 104,508 | |
-| `quarantine_transactions` | 900 | 900 | every planted bad row caught, none lost |
-| `quarantine_contracts` | 984 | 984 | |
-| `silver_transactions` | 104,174 | 104,174 | duplicates removed, bad rows excluded |
-| `silver_contracts` | 96,048 | 96,048 | each award reduced to its latest version |
-| split flags (synthetic) | 41 | 41 | all 39 planted cases found, plus 2 chance coincidences |
-| split flags (real) | 4 | 4 | 4 leads in 3 days of real NASA / GSA / EPA data |
-| de-obligation rows | 2,044 | 2,044 | negative amounts kept as valid data |
-
-Synthetic September obligations are ~2.6x July, reproducing the fiscal year-end surge.
+| `bronze_transactions` | 11,902 / 11,902 ✅ | 393,179 / 393,179 ✅ | Auto Loader read every file exactly once |
+| `bronze_contracts` | 11,373 / 11,373 ✅ | 388,851 / 388,851 ✅ | |
+| `quarantine_transactions` | - | 3,925 / 3,925 ✅ | every planted bad row caught, none lost |
+| `quarantine_contracts` | - | 3,799 / 3,799 ✅ | |
+| `silver_transactions` | 11,902 / 11,902 ✅ | 385,263 / 385,263 ✅ | duplicates removed, bad rows excluded |
+| `silver_contracts` | 11,373 / 11,373 ✅ | 353,931 / 353,931 ✅ | each award reduced to its latest version |
+| split-purchase flags | 4 / 4 ✅ | 58 / 58 ✅ | all planted cases found (plus chance coincidences, as in real data) |
+| de-obligation rows | 243 / 243 ✅ | 7,862 / 7,862 ✅ | negative amounts kept as valid data |
 
 ## Roadmap
 

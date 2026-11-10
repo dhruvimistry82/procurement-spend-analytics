@@ -8,10 +8,9 @@
 # Remove the `filters:` line from a source to pull every agency.
 scope: &scope
   agencies:
-    - {type: awarding, tier: toptier, name: "Department of Veterans Affairs"}
-    - {type: awarding, tier: toptier, name: "Department of Homeland Security"}
     - {type: awarding, tier: toptier, name: "National Aeronautics and Space Administration"}
     - {type: awarding, tier: toptier, name: "General Services Administration"}
+    - {type: awarding, tier: toptier, name: "Environmental Protection Agency"}
 
 sources:
   - name: contracts

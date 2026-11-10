@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 import requests
 
-from ingestion.ingest import bisect, dedupe, fetch_day, ingest, load_config
+from ingestion.ingest import LocalTarget, bisect, dedupe, fetch_day, ingest, is_day_file, load_config
 from ingestion.usaspending_client import USAspendingClient, flatten_award
 
 CONFIG = Path(__file__).resolve().parents[1] / "config" / "sources.yml"
@@ -150,15 +150,73 @@ def test_fetch_day_splits_capped_day_by_amount_and_recovers_every_row(monkeypatc
     assert got == {r["generated_internal_id"] for r in rows} and incomplete == 0
 
 
+class MemTarget:
+    def __init__(self, existing=()):
+        self.files = {}
+        self.existing = set(existing)
+
+    def exists(self, source, day):
+        return (source, day) in self.existing
+
+    def write(self, data, rel):
+        self.files[rel] = data
+        return rel
+
+
+def day_of(payload):
+    return payload["filters"]["time_period"][0]["start_date"]
+
+
 def test_ingest_writes_one_file_per_source_per_day_with_lineage():
     cfg = {"sources": [dict(SOURCE, page_size=100)]}
-    c = client(handler=lambda p: page([{"generated_internal_id": p["filters"]["time_period"][0]["start_date"]}], False))
-    written = {}
-    totals = ingest(c, cfg, "2026-10-01", "2026-10-02", lambda data, rel: written.setdefault(rel, data) and rel, "RUN1")
-    assert sorted(written) == ["contracts/2026-10-01_RUN1.jsonl", "contracts/2026-10-02_RUN1.jsonl"]
-    rec = json.loads(written["contracts/2026-10-01_RUN1.jsonl"].decode().splitlines()[0])
-    assert rec["_window_start"] == "2026-10-01" and rec["_run_id"] == "RUN1" and rec["_possibly_incomplete"] is False
-    assert totals == {"contracts": 2}
+    c = client(handler=lambda p: page([{"generated_internal_id": day_of(p)}], False))
+    t = MemTarget()
+    summary = ingest(c, cfg, "2026-10-01", "2026-10-02", t, "20261110T000000Z")
+    assert sorted(t.files) == ["contracts/2026-10-01_20261110T000000Z.jsonl",
+                               "contracts/2026-10-02_20261110T000000Z.jsonl"]
+    rec = json.loads(t.files["contracts/2026-10-01_20261110T000000Z.jsonl"].decode().splitlines()[0])
+    assert rec["_window_start"] == "2026-10-01" and rec["_possibly_incomplete"] is False
+    assert summary["rows"] == {"contracts": 2} and summary["failed"] == []
+
+
+def test_failed_day_is_recorded_and_other_days_continue():
+    cfg = {"sources": [dict(SOURCE, page_size=100)]}
+
+    def handler(p):
+        if day_of(p) == "2026-10-02":
+            return FakeResponse(503, {})
+        return page([{"generated_internal_id": day_of(p)}], False)
+    c = USAspendingClient(session=FakeSession(handler=handler), backoff_seconds=0, max_retries=2)
+    t = MemTarget()
+    summary = ingest(c, cfg, "2026-10-01", "2026-10-03", t, "R")
+    assert summary["failed"] == ["contracts 2026-10-02"]
+    assert len(t.files) == 2  # days 1 and 3 still landed
+
+
+def test_resume_skips_days_already_landed():
+    cfg = {"sources": [dict(SOURCE, page_size=100)]}
+    c = client(handler=lambda p: page([{"generated_internal_id": day_of(p)}], False))
+    t = MemTarget(existing={("contracts", "2026-10-01")})
+    summary = ingest(c, cfg, "2026-10-01", "2026-10-02", t, "R")
+    assert summary["skipped"] == ["contracts 2026-10-01"]
+    assert [day_of(p) for p in c.session.payloads] == ["2026-10-02"]
+
+
+def test_local_target_only_counts_this_scripts_day_files(tmp_path):
+    (tmp_path / "contracts").mkdir()
+    (tmp_path / "contracts" / "2026-10-01_2026-10-07_20261110T190933Z.jsonl").write_text("{}")  # old format
+    t = LocalTarget(tmp_path)
+    assert not t.exists("contracts", "2026-10-01")
+    (tmp_path / "contracts" / "2026-10-01_20261110T221758Z.jsonl").write_text("{}")
+    assert t.exists("contracts", "2026-10-01")
+    assert is_day_file("2026-10-01_20261110T221758Z.jsonl", "2026-10-01")
+    assert not is_day_file("2026-10-01_20261110T221758Z.jsonl", "2026-10-02")
+
+
+def test_backoff_is_capped():
+    c = USAspendingClient(session=FakeSession([FakeResponse(503, {})] * 3 + [page([], False)]),
+                          backoff_seconds=0, max_backoff_seconds=0)
+    assert fetch(c).records == []
 
 
 def test_config_sources_are_valid():

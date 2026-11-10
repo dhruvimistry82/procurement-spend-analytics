@@ -14,8 +14,10 @@ import requests
 
 BASE_URL = "https://api.usaspending.gov"
 # The search endpoints stop returning results after 10,000 rows per query
-# (100 pages x 100). Queries that reach it must be split into smaller ones.
-DEFAULT_MAX_RESULTS = 10_000
+# (100 pages x 100). Deep pages are also where the API tends to fail, so we
+# split queries earlier than that by default (see ingest.py).
+API_RESULT_CAP = 10_000
+DEFAULT_MAX_RESULTS = 5_000
 log = logging.getLogger(__name__)
 
 
@@ -27,11 +29,14 @@ class FetchResult:
 
 class USAspendingClient:
     def __init__(self, base_url: str = BASE_URL, session: requests.Session | None = None,
-                 max_retries: int = 5, backoff_seconds: float = 2.0, timeout: int = 60):
+                 max_retries: int = 6, backoff_seconds: float = 2.0, max_backoff_seconds: float = 60.0,
+                 page_delay_seconds: float = 0.0, timeout: int = 60):
         self.base_url = base_url.rstrip("/")
         self.session = session or requests.Session()
         self.max_retries = max_retries
         self.backoff_seconds = backoff_seconds
+        self.max_backoff_seconds = max_backoff_seconds
+        self.page_delay_seconds = page_delay_seconds  # pause between pages to go easy on the API
         self.timeout = timeout
 
     def _post(self, endpoint: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -49,7 +54,7 @@ class USAspendingClient:
                 retryable = status is None or status == 429 or status >= 500
                 if not retryable or attempt == self.max_retries:
                     raise
-                wait = self.backoff_seconds * 2 ** (attempt - 1)
+                wait = min(self.backoff_seconds * 2 ** (attempt - 1), self.max_backoff_seconds)
                 log.warning("Attempt %s failed (%s); retrying in %.1fs", attempt, exc, wait)
                 time.sleep(wait)
         raise RuntimeError("unreachable")
@@ -103,6 +108,8 @@ class USAspendingClient:
                 result.capped = True
                 break
             page += 1
+            if self.page_delay_seconds:
+                time.sleep(self.page_delay_seconds)
         return result
 
 

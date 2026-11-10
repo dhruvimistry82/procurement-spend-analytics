@@ -14,7 +14,9 @@ The search API returns at most 10,000 rows per query. So each run:
   1. queries one day at a time, and writes each day's file as soon as it's done
      (a failure on day 5 keeps days 1-4);
   2. if a day still hits the cap, re-queries it in award-amount bands, splitting
-     any band that is still capped, then removes duplicates from overlapping bands.
+     any band that is still capped, then removes duplicates from overlapping bands;
+  3. if the API keeps failing for a day, records it and moves on. Rerunning the same
+     command skips days already landed and retries only the missing ones.
 """
 from __future__ import annotations
 
@@ -22,10 +24,12 @@ import argparse
 import io
 import json
 import logging
+import re
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
+import requests
 import yaml
 
 from ingestion.usaspending_client import FetchResult, USAspendingClient, flatten_award
@@ -114,51 +118,89 @@ def to_jsonl(records: list[dict[str, Any]]) -> bytes:
     return "".join(json.dumps(r, default=str) + "\n" for r in records).encode("utf-8")
 
 
-def write_local(data: bytes, base_dir: Path, rel_path: str) -> str:
-    out = base_dir / rel_path
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_bytes(data)
-    return str(out)
+def is_day_file(name: str, day: str) -> bool:
+    """True for files this script lands for `day` (<day>_<run_id>.jsonl), ignoring anything else."""
+    return re.fullmatch(rf"{re.escape(day)}_\d{{8}}T\d{{6}}Z\.jsonl", name) is not None
 
 
-def make_volume_writer(volume_dir: str) -> Callable[[bytes, str], str]:
-    from databricks.sdk import WorkspaceClient  # imported lazily: optional dependency
+class LocalTarget:
+    """Writes landing files to a folder on this machine."""
 
-    ws = WorkspaceClient()
+    def __init__(self, base_dir: Path):
+        self.base_dir = base_dir
 
-    def write(data: bytes, rel_path: str) -> str:
-        path = f"{volume_dir.rstrip('/')}/{rel_path}"
-        ws.files.upload(path, io.BytesIO(data), overwrite=False)
+    def exists(self, source: str, day: str) -> bool:
+        return any(is_day_file(p.name, day) for p in (self.base_dir / source).glob(f"{day}_*.jsonl"))
+
+    def write(self, data: bytes, rel_path: str) -> str:
+        out = self.base_dir / rel_path
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_bytes(data)
+        return str(out)
+
+
+class VolumeTarget:
+    """Writes landing files to a Databricks Unity Catalog Volume (DATABRICKS_HOST / DATABRICKS_TOKEN)."""
+
+    def __init__(self, volume_dir: str):
+        from databricks.sdk import WorkspaceClient  # imported lazily: optional dependency
+
+        self.ws = WorkspaceClient()
+        self.volume_dir = volume_dir.rstrip("/")
+
+    def exists(self, source: str, day: str) -> bool:
+        try:
+            entries = self.ws.files.list_directory_contents(f"{self.volume_dir}/{source}")
+            return any(e.name and is_day_file(e.name, day) for e in entries)
+        except Exception:  # folder doesn't exist yet
+            return False
+
+    def write(self, data: bytes, rel_path: str) -> str:
+        path = f"{self.volume_dir}/{rel_path}"
+        self.ws.files.upload(path, io.BytesIO(data), overwrite=False)
         return path
-    return write
 
 
-def ingest(client: USAspendingClient, cfg: dict[str, Any], start: str, end: str,
-           writer: Callable[[bytes, str], str], run_id: str,
-           max_pages: int | None = None) -> dict[str, int]:
-    """Land every active source for every day in [start, end]. Returns row counts per source."""
-    totals: dict[str, int] = {}
+def ingest(client: USAspendingClient, cfg: dict[str, Any], start: str, end: str, target, run_id: str,
+           max_pages: int | None = None, resume: bool = True) -> dict[str, Any]:
+    """Land every active source for every day in [start, end].
+
+    Each (source, day) is independent: if the API fails for one, it is recorded and the
+    run moves on. With resume=True, days that already have a landing file are skipped,
+    so rerunning the same command only fetches what's missing.
+    """
+    summary: dict[str, Any] = {"rows": {}, "skipped": [], "failed": []}
     for day in daterange(start, end):
         for source in cfg["sources"]:
             if not source.get("active", True):
                 continue
-            raw, incomplete = fetch_day(client, source, day, max_pages)
+            name = source["name"]
+            if resume and target.exists(name, day):
+                log.info("%s %s: already landed, skipping", name, day)
+                summary["skipped"].append(f"{name} {day}")
+                continue
+            try:
+                raw, incomplete = fetch_day(client, source, day, max_pages)
+            except requests.RequestException as exc:
+                log.error("%s %s: FAILED after retries (%s); continuing", name, day, exc)
+                summary["failed"].append(f"{name} {day}")
+                continue
             rows = []
             for r in dedupe(raw, source.get("dedup_keys", ["generated_internal_id"])):
                 rec = flatten_award(r)
-                rec.update({"_source": source["name"], "_window_start": day, "_window_end": day,
+                rec.update({"_source": name, "_window_start": day, "_window_end": day,
                             "_run_id": run_id, "_possibly_incomplete": incomplete > 0})
                 rows.append(rec)
-            totals[source["name"]] = totals.get(source["name"], 0) + len(rows)
+            summary["rows"][name] = summary["rows"].get(name, 0) + len(rows)
             if not rows:
-                log.info("%s %s: no records", source["name"], day)
+                log.info("%s %s: no records", name, day)
                 continue
-            dest = writer(to_jsonl(rows), f"{source['name']}/{day}_{run_id}.jsonl")
-            log.info("%s %s: wrote %s records to %s", source["name"], day, len(rows), dest)
-    return totals
+            dest = target.write(to_jsonl(rows), f"{name}/{day}_{run_id}.jsonl")
+            log.info("%s %s: wrote %s records to %s", name, day, len(rows), dest)
+    return summary
 
 
-def main(argv: list[str] | None = None) -> None:
+def main(argv: list[str] | None = None) -> int:
     yesterday = date.today() - timedelta(days=1)
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--start", default=(yesterday - timedelta(days=6)).isoformat())
@@ -166,20 +208,29 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--config", default=str(REPO_ROOT / "config" / "sources.yml"))
     parser.add_argument("--target", choices=["local", "volume"], default="local")
     parser.add_argument("--max-pages", type=int, default=None, help="cap pages per query (for quick tests)")
+    parser.add_argument("--no-resume", action="store_true", help="re-fetch days that were already landed")
+    parser.add_argument("--page-delay", type=float, default=0.3, help="seconds to pause between API pages")
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     cfg = load_config(Path(args.config))
     if args.target == "volume":
-        writer = make_volume_writer(cfg["landing"]["volume_dir"])
+        target = VolumeTarget(cfg["landing"]["volume_dir"])
     else:
-        base = REPO_ROOT / cfg["landing"]["local_dir"]
-        writer = lambda data, rel: write_local(data, base, rel)  # noqa: E731
+        target = LocalTarget(REPO_ROOT / cfg["landing"]["local_dir"])
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    client = USAspendingClient(page_delay_seconds=args.page_delay)
 
-    totals = ingest(USAspendingClient(), cfg, args.start, args.end, writer, run_id, args.max_pages)
-    log.info("done: %s", totals)
+    summary = ingest(client, cfg, args.start, args.end, target, run_id, args.max_pages,
+                     resume=not args.no_resume)
+    log.info("rows written: %s", summary["rows"])
+    if summary["skipped"]:
+        log.info("skipped (already landed): %s", ", ".join(summary["skipped"]))
+    if summary["failed"]:
+        log.error("FAILED: %s -- rerun the same command to retry just these.", ", ".join(summary["failed"]))
+        return 1
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

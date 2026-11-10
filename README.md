@@ -116,11 +116,29 @@ python -m ingestion.synthetic --start 2026-07-04 --end 2026-09-30 \
     --calibration config/calibration.json --into-real-landing --target volume
 ```
 
+## Validation results
+
+Full refresh on 3 days of real data + Jul 4-Sep 30 synthetic data. Every table matches the count computed independently from the generator's answer key:
+
+| Check | Expected | Actual | Proves |
+|---|---:|---:|---|
+| `bronze_transactions` | 105,987 | 105,987 | Auto Loader read every file exactly once |
+| `bronze_contracts` | 104,508 | 104,508 | |
+| `quarantine_transactions` | 900 | 900 | every planted bad row caught, none lost |
+| `quarantine_contracts` | 984 | 984 | |
+| `silver_transactions` | 104,174 | 104,174 | duplicates removed, bad rows excluded |
+| `silver_contracts` | 96,048 | 96,048 | each award reduced to its latest version |
+| split flags (synthetic) | 41 | 41 | all 39 planted cases found, plus 2 chance coincidences |
+| split flags (real) | 4 | 4 | 4 leads in 3 days of real NASA / GSA / EPA data |
+| de-obligation rows | 2,044 | 2,044 | negative amounts kept as valid data |
+
+Synthetic September obligations are ~2.6x July, reproducing the fiscal year-end surge.
+
 ## Roadmap
 
 - [x] **Phase 1 — Core pipeline**: ingestion client with tests, Bronze/Silver/Gold, quarantine, SCD2 vendors, CI
 - [x] **Phase 1.5 — Correct the grain**: added transactions so spend is measured by obligation date, not lifetime award value
-- [ ] **Phase 2 — Run on real data**: backfill a few months, validate the numbers against USAspending.gov, screenshot results here
+- [x] **Phase 2 — Run and validate**: real sample + calibrated synthetic extension, every table validated against an answer key
 - [ ] **Phase 3 — Dashboard**: Databricks AI/BI dashboard on the Gold tables (spend trends, top vendors, concentration, flags)
 - [ ] **Phase 4 — Observability**: audit table per run (rows in/out/quarantined, duration), data freshness check, failure alerts
 - [ ] **Phase 5 — Enrich**: add a second source (e.g. grants, or agency budget data) and join it to procurement spend

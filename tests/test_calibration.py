@@ -100,3 +100,63 @@ def test_cli_into_real_landing_tags_rows(tmp_path, monkeypatch):
     assert files
     rows = [json.loads(l) for l in files[0].read_text().splitlines()]
     assert rows and all(r["_synthetic"] is True for r in rows)
+
+
+# --- dollar scale (heavy tail) ------------------------------------------------
+
+def heavy_tail_sample():
+    """Fake 'real' sample where a few awards are enormous, as in real federal data."""
+    import random
+    rng = random.Random(5)
+    tx, ct = fake_real_sample()
+    for t in tx:
+        if t["mod"] == "0" and isinstance(t["transaction_amount"], float) and rng.random() < 0.004:
+            t["transaction_amount"] = round(t["transaction_amount"] * 5000, 2)
+    return tx, ct
+
+
+def test_sample_quantiles_stays_within_range_and_hits_tail():
+    import random
+    from ingestion.calibrate import quantiles
+    from ingestion.synthetic import sample_quantiles
+    vals = [float(i) for i in range(1, 10001)]
+    q = quantiles(vals)
+    rng = random.Random(0)
+    draws = [sample_quantiles(rng, q) for _ in range(20000)]
+    assert min(draws) >= 1 and max(draws) <= 10000 * 1.5
+    assert sum(d > 9900 for d in draws) / len(draws) > 0.003  # top tail reproduced
+    assert abs(statistics.mean(draws) / statistics.mean(vals) - 1) < 0.03  # average preserved
+    # a lone giant keeps its full weight
+    vals2 = [1.0] * 123 + [1_000_000.0]
+    q2 = quantiles(vals2, points=101)  # uneven bucket sizes
+    weighted = sum(a * n for a, n in zip(q2["avg"], q2["n"])) / sum(q2["n"])
+    assert abs(weighted - statistics.mean(vals2)) < 1e-6
+
+
+def test_synthetic_dollars_match_real_daily_scale():
+    from ingestion.synthetic import run_generation
+    tx, ct = heavy_tail_sample()
+    cal = profile(tx, ct)
+    gen = Generator(seed=11, calibration=cal, scale=1.0)
+    stats = run_generation(gen, "2026-07-06", "2026-08-28", lambda data, rel: rel, "R", today="2026-11-10")
+    weekdays = sum(1 for d in daterange("2026-07-06", "2026-08-28") if date.fromisoformat(d).weekday() < 5)
+    synthetic_daily = sum(stats["net_obligations_by_month"].values()) / weekdays
+    ratio = synthetic_daily / cal["weekday_net_obligations_per_day"]
+    assert 0.6 < ratio < 1.6, ratio  # heavy tail makes single runs noisy; mean over seeds is ~1.0
+
+
+def test_run_generation_expectations_match_brute_force():
+    from ingestion.synthetic import run_generation, tx_valid, contract_valid
+    tx, ct = fake_real_sample()
+    cal = profile(tx, ct)
+    written = {}
+    stats = run_generation(Generator(seed=4, calibration=cal, scale=0.2), "2026-07-06", "2026-07-20",
+                           lambda data, rel: written.setdefault(rel, data), "R", today="2026-11-10")
+    rows = {"contracts": [], "transactions": []}
+    for rel, data in written.items():
+        rows[rel.split("/")[0]] += [json.loads(l) for l in data.decode().splitlines()]
+    T, C = rows["transactions"], rows["contracts"]
+    assert stats["bronze_transactions"] == len(T) and stats["bronze_contracts"] == len(C)
+    assert stats["quarantine_transactions"] == sum(not tx_valid(t, "2026-11-10") for t in T)
+    assert stats["silver_transactions"] == len({(t["generated_internal_id"], t["mod"]) for t in T if tx_valid(t, "2026-11-10")})
+    assert stats["silver_contracts"] == len({c["generated_internal_id"] for c in C if contract_valid(c)})

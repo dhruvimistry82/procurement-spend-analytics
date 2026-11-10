@@ -76,10 +76,31 @@ def make_vendors(rng: random.Random, n: int = 60) -> list[dict[str, str]]:
     return vendors
 
 
+_CUM: dict[int, list[int]] = {}
+
+
+def sample_quantiles(rng: random.Random, buckets: dict[str, list]) -> float:
+    """Draw from an empirical distribution stored as equal-count buckets (see calibrate.py).
+
+    Buckets are picked in proportion to how many real values they hold, so the expected
+    value equals the real average, heavy tail included. A small mean-one jitter avoids
+    repeating exact values.
+    """
+    cum = _CUM.get(id(buckets))
+    if cum is None:
+        cum, total = [], 0
+        for n in buckets["n"]:
+            total += n
+            cum.append(total)
+        _CUM[id(buckets)] = cum
+    value = rng.choices(buckets["avg"], cum_weights=cum)[0]
+    return round(value * math.exp(rng.gauss(-0.005, 0.1)), 2)
+
+
 class Generator:
     def __init__(self, seed: int = 42, rows_per_day: int = 120, split_threshold: float = 10_000,
                  split_cases_per_week: int = 3, invalid_rate: float = 0.01,
-                 calibration: dict[str, Any] | None = None, scale: float = 0.25):
+                 calibration: dict[str, Any] | None = None, scale: float = 1.0):
         self.rng = random.Random(seed)
         self.cal = calibration
         if calibration:
@@ -119,7 +140,11 @@ class Generator:
         vendor = vendor or rng.choices(self.vendors, weights=self.weights)[0]
         cat = category or rng.choices(self.categories, weights=[c["weight"] for c in self.categories])[0]
         if amount is None:
-            amount = round(max(100.0, rng.lognormvariate(math.log(cat["median"]), cat["sigma"])), 2)
+            q = cat.get("quantiles") or (self.cal or {}).get("base_amount_quantiles")
+            if q:
+                amount = max(1.0, sample_quantiles(rng, q))
+            else:
+                amount = round(max(100.0, rng.lognormvariate(math.log(cat["median"]), cat["sigma"])), 2)
         piid = f"SYN{day:%y}{self.next_id:07d}"
         self.next_id += 1
         award = {
@@ -197,9 +222,17 @@ class Generator:
             if open_awards and rng.random() < self.mod_share:  # modification of an existing award
                 award = rng.choice(open_awards)
                 award["mods"] += 1
+                cal = self.cal or {}
                 if rng.random() < self.deob_share:
-                    amount = -round(min(award["obligated"], award["base_amount"]) * rng.uniform(0.05, 0.4), 2)
+                    if cal.get("deobligation_amount_quantiles"):
+                        size = sample_quantiles(rng, cal["deobligation_amount_quantiles"])
+                    else:
+                        size = award["base_amount"] * rng.uniform(0.05, 0.4)
+                    # can't take back more than was obligated
+                    amount = -round(max(0.01, min(size, award["obligated"])), 2)
                     self.truth["deobligations"] += 1
+                elif cal.get("modification_amount_quantiles"):
+                    amount = sample_quantiles(rng, cal["modification_amount_quantiles"])
                 else:
                     amount = round(award["base_amount"] * rng.uniform(0.05, 0.6), 2)
                 txs.append(self._transaction(award, day, amount, f"P{award['mods']:05d}"))
@@ -243,6 +276,62 @@ class Generator:
         return contracts, txs
 
 
+def tx_valid(t: dict[str, Any], today: str) -> bool:
+    """Mirrors TRANSACTION_RULES in pipelines/silver.py."""
+    return bool(t.get("generated_internal_id") and t.get("mod") and t.get("awarding_agency")
+                and t.get("transaction_amount") is not None and t.get("action_date")
+                and t["action_date"] <= today)
+
+
+def contract_valid(c: dict[str, Any]) -> bool:
+    """Mirrors AWARD_RULES in pipelines/silver.py."""
+    return bool(c.get("generated_internal_id") and c.get("awarding_agency") and c.get("award_amount") is not None
+                and c["start_date"] <= c["end_date"] and c.get("last_modified_date"))
+
+
+def run_generation(gen: "Generator", start: str, end: str, write, run_id: str,
+                   split_threshold: float = 10_000, today: str | None = None) -> dict[str, Any]:
+    """Generate day by day, write each day's files, and compute what each pipeline table
+    should contain, without keeping all rows in memory."""
+    today = today or date.today().isoformat()
+    st_keys: set = set()
+    sc_keys: set = set()
+    stats: dict[str, Any] = defaultdict(int)
+    monthly = defaultdict(float)
+    for day in daterange(start, end):
+        contracts, txs = gen.day(date.fromisoformat(day))
+        for source, rows in (("contracts", contracts), ("transactions", txs)):
+            if rows:
+                write(to_jsonl(lineage(rows, source, day, run_id)), f"{source}/{day}_{run_id}.jsonl")
+        stats["bronze_contracts"] += len(contracts)
+        stats["bronze_transactions"] += len(txs)
+        groups = defaultdict(int)
+        for c in contracts:
+            if contract_valid(c):
+                sc_keys.add(c["generated_internal_id"])
+            else:
+                stats["quarantine_contracts"] += 1
+        for t in txs:
+            if not tx_valid(t, today):
+                stats["quarantine_transactions"] += 1
+                continue
+            key = (t["generated_internal_id"], t["mod"])
+            if key in st_keys:
+                continue  # duplicate: Silver keeps one copy
+            st_keys.add(key)
+            monthly[t["action_date"][:7]] += t["transaction_amount"]
+            if t["transaction_amount"] < 0:
+                stats["deobligation_rows"] += 1
+            if t["mod"] == "0" and split_threshold * 0.9 <= t["transaction_amount"] < split_threshold:
+                groups[(t["awarding_agency"], t["recipient_uei"], t["action_date"])] += 1
+        stats["split_flags"] += sum(1 for n in groups.values() if n >= 2)
+    stats["silver_transactions"] = len(st_keys)
+    stats["silver_contracts"] = len(sc_keys)
+    stats["net_obligations_by_month"] = {k: round(v, 2) for k, v in sorted(monthly.items())}
+    stats["planted_split_cases"] = len(gen.truth["split_cases"])
+    return dict(stats)
+
+
 def lineage(rows: list[dict], source: str, day: str, run_id: str) -> list[dict]:
     return [{**r, "_source": source, "_window_start": day, "_window_end": day, "_run_id": run_id,
              "_possibly_incomplete": False, "_synthetic": True} for r in rows]
@@ -257,7 +346,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--config", default=str(REPO_ROOT / "config" / "sources.yml"))
     parser.add_argument("--calibration", help="profile from ingestion.calibrate, to mimic a real sample")
-    parser.add_argument("--scale", type=float, default=0.25, help="fraction of the real daily volume (calibrated mode)")
+    parser.add_argument("--scale", type=float, default=1.0, help="fraction of the real daily volume (calibrated mode)")
     parser.add_argument("--into-real-landing", action="store_true",
                         help="write into the real landing folder (rows stay tagged _synthetic)")
     args = parser.parse_args(argv)
@@ -273,17 +362,13 @@ def main(argv: list[str] | None = None) -> int:
     calibration = json.loads(Path(args.calibration).read_text()) if args.calibration else None
     gen = Generator(seed=args.seed, rows_per_day=args.rows_per_day, calibration=calibration, scale=args.scale)
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    totals: dict[str, int] = defaultdict(int)
-    for day in daterange(args.start, args.end):
-        contracts, txs = gen.day(date.fromisoformat(day))
-        for source, rows in (("contracts", contracts), ("transactions", txs)):
-            if rows:
-                target.write(to_jsonl(lineage(rows, source, day, run_id)), f"{source}/{day}_{run_id}.jsonl")
-                totals[source] += len(rows)
+    stats = run_generation(gen, args.start, args.end, target.write, run_id)
+    totals = {"contracts": stats["bronze_contracts"], "transactions": stats["bronze_transactions"]}
 
     truth_dir = REPO_ROOT / "data" / "synthetic_truth"
     truth_dir.mkdir(parents=True, exist_ok=True)
     (truth_dir / "truth.json").write_text(json.dumps(gen.truth, indent=2))
+    (truth_dir / "expected.json").write_text(json.dumps(stats, indent=2))
     log.info("rows written: %s", dict(totals))
     log.info("planted: %s split cases, %s invalid contracts, %s invalid transactions, %s deobligations, %s duplicates",
              len(gen.truth["split_cases"]), gen.truth["invalid_contracts"], gen.truth["invalid_transactions"],

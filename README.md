@@ -61,6 +61,7 @@ flowchart LR
 config/sources.yml        what to ingest (metadata)
 ingestion/                API client + CLI that lands JSON Lines files; calibration + synthetic data generator
 pipelines/                Lakeflow declarative pipeline: bronze.py, silver.py, gold.py
+notebooks/                Databricks notebook: generate the synthetic extension and validate every table
 tests/                    unit tests: ingestion (mocked API), calibration, synthetic data (planted anomalies are detectable)
 docs/setup.sql            one-time catalog / schema / volume setup
 .github/workflows/        CI (tests) + daily ingestion schedule
@@ -94,6 +95,8 @@ python -m ingestion.ingest --start 2026-10-01 --end 2026-10-07 --max-pages 2
 | Jul 4 - Sep 30, 2026 | **Synthetic**, calibrated on the real sample | `data_source = 'synthetic'` |
 
 The real sample proves the pipeline works on real government data. To analyze a full fiscal quarter without heavy API use, `ingestion/calibrate.py` learns **aggregate statistics only** from the real files (category mix, amount distributions per category, daily volume, modification and de-obligation rates), and `ingestion/synthetic.py` generates the rest of the quarter from that profile.
+
+**Getting the dollars right.** Federal spending is extremely heavy-tailed: a handful of huge awards make up most of the money. A first version described amounts by their median and produced synthetic days worth ~4% of a real day. The calibration now stores amounts as equal-count bucket averages (1,001 buckets overall, 101 per category), sampled in proportion to bucket size, which preserves the real mean exactly, giants included. Across 10 seeds, synthetic daily obligations average **1.02x** the real sample (tested in `tests/test_calibration.py`).
 
 Safeguards:
 - **Every row is tagged.** `is_synthetic` flows from Bronze to Silver; every Gold table has `data_source`, and the dashboard filters on it. Real and synthetic figures are never blended unknowingly.

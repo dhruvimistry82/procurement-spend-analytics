@@ -1,0 +1,498 @@
+{
+  "datasets": [
+    {
+      "name": "1d847d4d",
+      "displayName": "Agency Monthly Procurement Spending Summary",
+      "config": {
+        "version": "1.1",
+        "source": "SELECT data_source, month, awarding_agency, net_obligations,\r\n       new_award_obligations, modification_obligations, deobligations\r\nFROM procurement.analytics.gold_spend_by_agency_month",
+        "dimensions": [
+          {
+            "expr": "source.*"
+          }
+        ],
+        "measures": [
+          {
+            "name": "count",
+            "expr": "COUNT(*)",
+            "comment": "Represents the total number of rows in the dataset. Use this measure to count all",
+            "displayName": "Count"
+          }
+        ]
+      }
+    },
+    {
+      "name": "6ba60233",
+      "displayName": "Top Ten Vendors by Agency Spending Share",
+      "config": {
+        "version": "1.1",
+        "source": "SELECT data_source, awarding_agency, recipient_name, vendor_obligations,\r\n       ROUND(share_of_agency_spend * 100, 1) AS share_pct, rank_in_agency\r\nFROM procurement.analytics.gold_top_vendors\r\nWHERE rank_in_agency <= 10",
+        "dimensions": [
+          {
+            "expr": "source.*"
+          }
+        ],
+        "measures": [
+          {
+            "name": "count",
+            "expr": "COUNT(*)",
+            "comment": "Represents the total number of rows in the dataset. Use this measure to count all",
+            "displayName": "Count"
+          }
+        ]
+      }
+    },
+    {
+      "name": "4bdecec4",
+      "displayName": "Vendor Concentration and Awarding Agency Data Summary",
+      "config": {
+        "version": "1.1",
+        "source": "SELECT data_source, awarding_agency, hhi, vendor_count, concentration\r\nFROM procurement.analytics.gold_vendor_concentration",
+        "dimensions": [
+          {
+            "expr": "source.*"
+          }
+        ],
+        "measures": [
+          {
+            "name": "count",
+            "expr": "COUNT(*)",
+            "comment": "Represents the total number of rows in the dataset. Use this measure to count all",
+            "displayName": "Count"
+          }
+        ]
+      }
+    },
+    {
+      "name": "57615b8e",
+      "displayName": "Vendor Market Share and Awarding Agency Overview",
+      "config": {
+        "version": "1.1",
+        "source": "SELECT data_source, awarding_agency, hhi, vendor_count, concentration\r\nFROM procurement.analytics.gold_vendor_concentration",
+        "dimensions": [
+          {
+            "expr": "source.*"
+          }
+        ],
+        "measures": [
+          {
+            "name": "count",
+            "expr": "COUNT(*)",
+            "comment": "Represents the total number of rows in the dataset. Use this measure to count all",
+            "displayName": "Count"
+          }
+        ]
+      }
+    }
+  ],
+  "pages": [
+    {
+      "name": "f65fb2fc",
+      "displayName": "Untitled page",
+      "layout": [
+        {
+          "widget": {
+            "name": "top-vendors",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "1d847d4d",
+                  "fields": [
+                    {
+                      "name": "awarding_agency",
+                      "expression": "`awarding_agency`"
+                    },
+                    {
+                      "name": "monthly(month)",
+                      "expression": "DATE_TRUNC(\"MONTH\", `month`)"
+                    },
+                    {
+                      "name": "sum(net_obligations)",
+                      "expression": "SUM(`net_obligations`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "frame": {
+                "showTitle": true,
+                "title": {
+                  "value": "**Monthly obligations**",
+                  "fields": []
+                }
+              },
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "monthly(month)",
+                  "scale": {
+                    "type": "temporal"
+                  }
+                },
+                "y": {
+                  "fieldName": "sum(net_obligations)",
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                },
+                "color": {
+                  "fieldName": "awarding_agency",
+                  "scale": {
+                    "type": "categorical"
+                  }
+                }
+              },
+              "data": {
+                "queryName": "main_query"
+              }
+            }
+          },
+          "position": {
+            "x": 6,
+            "y": 0,
+            "width": 6,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "monthly-obligations",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "6ba60233",
+                  "fields": [
+                    {
+                      "name": "data_source",
+                      "expression": "`data_source`"
+                    },
+                    {
+                      "name": "sum(vendor_obligations)",
+                      "expression": "SUM(`vendor_obligations`)"
+                    },
+                    {
+                      "name": "recipient_name",
+                      "expression": "`recipient_name`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "frame": {
+                "showTitle": true,
+                "title": {
+                  "value": "Top vendors",
+                  "fields": []
+                }
+              },
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "sum(vendor_obligations)",
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                },
+                "y": {
+                  "fieldName": "recipient_name",
+                  "scale": {
+                    "type": "categorical",
+                    "sort": {
+                      "by": "natural-order-reversed"
+                    }
+                  }
+                },
+                "color": {
+                  "fieldName": "data_source",
+                  "scale": {
+                    "type": "categorical"
+                  }
+                }
+              },
+              "data": {
+                "queryName": "main_query"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 0,
+            "width": 6,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "vendor-concentration",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "4bdecec4",
+                  "fields": [
+                    {
+                      "name": "concentration",
+                      "expression": "`concentration`"
+                    },
+                    {
+                      "name": "awarding_agency",
+                      "expression": "`awarding_agency`"
+                    },
+                    {
+                      "name": "sum(hhi)",
+                      "expression": "SUM(`hhi`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "frame": {
+                "showTitle": true,
+                "title": {
+                  "value": "Vendor concentration",
+                  "fields": []
+                }
+              },
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "awarding_agency",
+                  "scale": {
+                    "type": "categorical"
+                  }
+                },
+                "y": {
+                  "fieldName": "sum(hhi)",
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                },
+                "color": {
+                  "fieldName": "concentration",
+                  "scale": {
+                    "type": "categorical"
+                  }
+                }
+              },
+              "data": {
+                "queryName": "main_query"
+              }
+            }
+          },
+          "position": {
+            "x": 6,
+            "y": 8,
+            "width": 6,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "possible-split-purchases-leads-review",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "57615b8e",
+                  "fields": [
+                    {
+                      "name": "data_source",
+                      "expression": "`data_source`"
+                    },
+                    {
+                      "name": "awarding_agency",
+                      "expression": "`awarding_agency`"
+                    },
+                    {
+                      "name": "hhi",
+                      "expression": "`hhi`"
+                    },
+                    {
+                      "name": "vendor_count",
+                      "expression": "`vendor_count`"
+                    },
+                    {
+                      "name": "concentration",
+                      "expression": "`concentration`"
+                    },
+                    {
+                      "name": "measure(count)",
+                      "expression": "MEASURE(`count`)"
+                    }
+                  ],
+                  "filters": [
+                    {
+                      "expression": "`data_source` IN (`data_source`) OR TRUE"
+                    },
+                    {
+                      "expression": "`awarding_agency` IN (`awarding_agency`) OR TRUE"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "frame": {
+                "showTitle": true,
+                "title": {
+                  "value": "Possible split purchases (leads for review)",
+                  "fields": []
+                }
+              },
+              "version": 2,
+              "widgetType": "table",
+              "encodings": {
+                "columns": [
+                  {
+                    "fieldName": "data_source"
+                  },
+                  {
+                    "fieldName": "awarding_agency"
+                  },
+                  {
+                    "fieldName": "hhi"
+                  },
+                  {
+                    "fieldName": "vendor_count"
+                  },
+                  {
+                    "fieldName": "concentration"
+                  },
+                  {
+                    "fieldName": "measure(count)"
+                  }
+                ]
+              },
+              "data": {
+                "queryName": "main_query"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 8,
+            "width": 6,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "be7522c9",
+            "spec": {
+              "widgetType": "text",
+              "version": 1,
+              "encodings": {
+                "text": {
+                  "lines": [
+                    "Jul 1–3: real USAspending.gov data (NASA, GSA, EPA). Jul 4–Sep 30: synthetic data calibrated on the real sample; agency and vendor names in synthetic rows are fictional. Split-purchase flags are statistical leads for review, not findings of wrongdoing."
+                  ],
+                  "fields": []
+                }
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 6,
+            "width": 12,
+            "height": 2
+          }
+        }
+      ],
+      "pageType": "PAGE_TYPE_CANVAS",
+      "layoutVersion": "GRID_V1"
+    },
+    {
+      "name": "2996f18c",
+      "displayName": "Global Filters",
+      "layout": [
+        {
+          "widget": {
+            "name": "7876a565",
+            "queries": [
+              {
+                "name": "dashboards/01f1dd614510172c940f584f47a2778d/datasets/01f1dd6169b8175c94f23ddebcf84f8b_data_source",
+                "query": {
+                  "datasetName": "1d847d4d",
+                  "fields": [
+                    {
+                      "name": "data_source",
+                      "expression": "`data_source`"
+                    },
+                    {
+                      "name": "data_source_associativity",
+                      "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "dashboards/01f1dd614510172c940f584f47a2778d/datasets/01f1dd6186d217a289e4a50437568a95_awarding_agency",
+                "query": {
+                  "datasetName": "6ba60233",
+                  "fields": [
+                    {
+                      "name": "awarding_agency",
+                      "expression": "`awarding_agency`"
+                    },
+                    {
+                      "name": "awarding_agency_associativity",
+                      "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "frame": {
+                "showTitle": true
+              },
+              "widgetType": "filter-multi-select",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "data_source",
+                    "queryName": "dashboards/01f1dd614510172c940f584f47a2778d/datasets/01f1dd6169b8175c94f23ddebcf84f8b_data_source"
+                  },
+                  {
+                    "fieldName": "awarding_agency",
+                    "queryName": "dashboards/01f1dd614510172c940f584f47a2778d/datasets/01f1dd6186d217a289e4a50437568a95_awarding_agency"
+                  }
+                ]
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 0,
+            "width": 1,
+            "height": 2
+          }
+        }
+      ],
+      "pageType": "PAGE_TYPE_GLOBAL_FILTERS",
+      "layoutVersion": "GRID_V1"
+    }
+  ],
+  "uiSettings": {
+    "theme": {
+      "widgetHeaderAlignment": "ALIGNMENT_UNSPECIFIED"
+    },
+    "applyModeEnabled": false
+  }
+}

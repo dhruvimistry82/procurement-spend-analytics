@@ -25,6 +25,16 @@ flowchart LR
     SC & ST --> G6[gold_contract_portfolio]
 ```
 
+## Dashboard
+
+![Federal Procurement Spend Analytics dashboard](docs/images/dashboard.png)
+
+Databricks AI/BI dashboard on the Gold tables, with filters for `data_source` (real / synthetic) and agency. The definition is in [`dashboards/`](dashboards/) and can be imported into any workspace (**Dashboards → Import**).
+
+Findings from the real sample (Jul 1-3, 2026):
+- **GSA spend is highly concentrated** (HHI ~3,700: a few vendors receive most obligations); EPA is moderate (~2,200) and NASA competitive (~770).
+- **4 possible split-purchase patterns** in 3 days, worth a closer look (leads, not findings).
+
 ## What it answers
 
 | Gold table | Question |
@@ -126,6 +136,12 @@ python -m ingestion.synthetic --start 2026-07-04 --end 2026-09-30 \
     --calibration config/calibration.json --into-real-landing --target volume
 ```
 
+## Known limitations
+
+- **Vendor concentration isn't calibrated.** Synthetic agencies spread work over many vendors (HHI ~100), while real agencies are far more concentrated (770-3,700). Next step: learn each agency's top-vendor share in `calibrate.py`.
+- **Dollar totals are noisy.** Real spending is dominated by a few giant awards, so a 3-day real sample is a noisy baseline; synthetic weekdays land in the same order of magnitude, not on an exact match.
+- **Synthetic dates and the September surge factor (2.5x) are assumptions**, not learned from data; they are documented in `ingestion/synthetic.py`.
+
 ## Validation results
 
 Full refresh on 3 days of real data + Jul 4-Sep 30 synthetic data at full real volume (~800k rows). `notebooks/synthetic_extension.py` checks every table, for real and synthetic rows separately, against counts computed independently from the generator:
@@ -146,7 +162,7 @@ Full refresh on 3 days of real data + Jul 4-Sep 30 synthetic data at full real v
 - [x] **Phase 1 — Core pipeline**: ingestion client with tests, Bronze/Silver/Gold, quarantine, SCD2 vendors, CI
 - [x] **Phase 1.5 — Correct the grain**: added transactions so spend is measured by obligation date, not lifetime award value
 - [x] **Phase 2 — Run and validate**: real sample + calibrated synthetic extension, every table validated against an answer key
-- [ ] **Phase 3 — Dashboard**: Databricks AI/BI dashboard on the Gold tables (spend trends, top vendors, concentration, flags)
+- [x] **Phase 3 — Dashboard**: Databricks AI/BI dashboard on the Gold tables (spend trends, top vendors, concentration, flags)
 - [ ] **Phase 4 — Observability**: audit table per run (rows in/out/quarantined, duration), data freshness check, failure alerts
 - [ ] **Phase 5 — Enrich**: add a second source (e.g. grants, or agency budget data) and join it to procurement spend
 - [ ] **Phase 6 — Productionize**: Databricks Asset Bundles for deploy-as-code, pipeline unit tests with sample data

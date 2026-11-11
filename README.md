@@ -27,9 +27,7 @@ flowchart LR
 
 ## Dashboard
 
-![Federal Procurement Spend Analytics dashboard](docs/images/dashboard.png)
-
-Databricks AI/BI dashboard on the Gold tables, with filters for `data_source` (real / synthetic) and agency. The definition is in [`dashboards/`](dashboards/) and can be imported into any workspace (**Dashboards → Import**).
+Databricks AI/BI dashboard on the Gold tables: monthly obligations by agency, top vendors, vendor concentration (HHI) and split-purchase leads, with filters for `data_source` (real / synthetic) and agency. The definition is in [`Dashboard/`](Dashboard/) and can be imported into any workspace (**Dashboards → Import**).
 
 Findings from the real sample (Jul 1-3, 2026):
 - **GSA spend is highly concentrated** (HHI ~3,700: a few vendors receive most obligations); EPA is moderate (~2,200) and NASA competitive (~770).

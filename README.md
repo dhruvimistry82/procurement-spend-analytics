@@ -144,16 +144,6 @@ python -m ingestion.synthetic --start 2026-07-04 --end 2026-09-30 \
 
 Full refresh on 3 days of real data + Jul 4-Sep 30 synthetic data at full real volume (~800k rows). `notebooks/synthetic_extension.py` checks every table, for real and synthetic rows separately, against counts computed independently from the generator:
 
-| Check | Real expected / actual | Synthetic expected / actual | Proves |
-|---|---:|---:|---|
-| `bronze_transactions` | 11,902 / 11,902 ✅ | 393,179 / 393,179 ✅ | Auto Loader read every file exactly once |
-| `bronze_contracts` | 11,373 / 11,373 ✅ | 388,851 / 388,851 ✅ | |
-| `quarantine_transactions` | - | 3,925 / 3,925 ✅ | every planted bad row caught, none lost |
-| `quarantine_contracts` | - | 3,799 / 3,799 ✅ | |
-| `silver_transactions` | 11,902 / 11,902 ✅ | 385,263 / 385,263 ✅ | duplicates removed, bad rows excluded |
-| `silver_contracts` | 11,373 / 11,373 ✅ | 353,931 / 353,931 ✅ | each award reduced to its latest version |
-| split-purchase flags | 4 / 4 ✅ | 58 / 58 ✅ | all planted cases found (plus chance coincidences, as in real data) |
-| de-obligation rows | 243 / 243 ✅ | 7,862 / 7,862 ✅ | negative amounts kept as valid data |
 
 ## Roadmap
 
